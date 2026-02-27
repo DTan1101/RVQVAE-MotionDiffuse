@@ -1,110 +1,174 @@
-# Text-driven Motion Generation
+﻿# RQVAE-MotionDiffuse
 
-<!-- TOC -->
+RQVAE-MotionDiffuse is a text-to-motion research codebase that combines:
 
-- [Installation](#installation)
-- [Training](#prepare-environment)
-- [Acknowledgement](#acknowledgement)
+- A MotionDiffuse-style transformer diffusion model for motion generation.
+- A Residual Vector Quantized VAE (RVQ-VAE) motion tokenizer.
+- A latent diffusion pipeline trained on top of RVQ-VAE latents.
 
-<!-- TOC -->
+This repository also includes dataset preprocessing helpers, evaluation scripts, and notebooks for quick experimentation.
+
+## Project Status
+
+This is a research-oriented codebase and includes some dataset-specific and machine-specific paths in a few scripts. You may need to adjust paths and options for your local environment.
+
+## Features
+
+- Text-to-motion generation with transformer diffusion.
+- RVQ-VAE training for motion tokenization.
+- Latent diffusion training on RVQ-VAE latent space.
+- Support for multiple datasets (including BEAT, HumanML3D, KIT-ML in different scripts).
+- Basic evaluation and visualization utilities.
+
+## Repository Structure
+
+```text
+.
+|-- datasets/                # Dataset loaders, preprocessing, evaluation helpers
+|-- models/                  # Diffusion, transformer, and VQ-related models
+|-- options/                 # CLI options for training/eval
+|-- tools/                   # Train/eval/visualization scripts
+|-- trainers/                # Trainer classes
+|-- utils/                   # Metrics, plotting, motion processing, utilities
+|-- install.md               # Detailed environment and dataset setup notes
+|-- inference.ipynb          # Notebook for inference experiments
+|-- evaluation.ipynb         # Notebook for evaluation experiments
+`-- trainer_visual.ipynb     # Notebook for training visualization
+```
+
+## Requirements
+
+Main Python packages listed in `requirements.txt`:
+
+- `tqdm`
+- `opencv-python`
+- `scipy`
+- `matplotlib==3.3.1`
+- `spacy`
+- `git+https://github.com/openai/CLIP.git`
+
+For full environment setup (PyTorch, CUDA, MMCV), follow [install.md](./install.md).
 
 ## Installation
 
-Please refer to [install.md](install.md) for detailed installation.
+1. Create and activate environment (example with Conda):
+
+```bash
+conda create -n motiondiffuse python=3.7 -y
+conda activate motiondiffuse
+```
+
+2. Install PyTorch for your CUDA version.
+
+3. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+4. Follow [install.md](./install.md) to prepare datasets and pretrained evaluation assets.
+
+## Data Preparation
+
+The codebase expects preprocessed motion/text data (for example BEAT with `npy/` and `txt/` folders, or HumanML3D/KIT-ML style folders).
+
+For BEAT-related scripts, a typical layout is:
+
+```text
+datasets/BEAT_numpy/
+|-- npy/
+|-- txt/
+|-- train.txt
+`-- val.txt
+```
+
+Notes:
+
+- `tools/train_vq.py` can auto-create `train.txt` and `val.txt` if missing.
+- `tools/train.py` and `tools/train_vq_diffusion.py` also include helper logic for creating split files in some modes.
 
 ## Training
 
-Due to the requirement of a large batchsize, we highly recommend you to use DDP training. A slurm-based script is as below:
+### 1) Train baseline MotionDiffuse-style model
 
-```shell
-PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
-srun -p ${PARTITION} -n8 --gres=gpu:8 -u \
-    python -u tools/train.py \
-    --name kit_baseline_ddp_8gpu_8layers_1000 \
-    --batch_size 128 \
-    --times 200 \
-    --num_epochs 50 \
-    --dataset_name kit \
-    --distributed
+Use `tools/train.py`:
+
+```bash
+python tools/train.py --dataset_name beat --name beat_diffusion_exp
 ```
 
-Besides, you can train the model on multi-GPUs with DataParallel:
+Common datasets in this script:
 
-```shell
-PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
-    python -u tools/train.py \
-    --name kit_baseline_dp_2gpu_8layers_1000 \
-    --batch_size 128 \
-    --times 50 \
-    --num_epochs 50 \
-    --dataset_name kit \
-    --num_layers 8 \
-    --diffusion_steps 1000 \
-    --data_parallel \
-    --gpu_id 0 1
+- `t2m`
+- `kit`
+- `beat`
+
+### 2) Train RVQ-VAE tokenizer
+
+Use `tools/train_vq.py`:
+
+```bash
+python tools/train_vq.py \
+  --dataset_name beat \
+  --data_root ./datasets/BEAT_numpy \
+  --name VQVAE_BEAT \
+  --max_epoch 100 \
+  --batch_size 64
 ```
 
-Otherwise, you can run the training code on a single GPU like:
+Outputs are written under:
 
-```shell
-PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
-python -u tools/train.py \
-    --name kit_baseline_1gpu_8layers_1000 \
-    --batch_size 128 \
-    --times 25 \
-    --num_epochs 50 \
-    --dataset_name kit
+```text
+checkpoints/<dataset_name>/<name>/
 ```
 
-Here, `times` means the duplication times of the original dataset. To retain the number of iterations, you can set `times` to 25 for 1 GPU, 50 for 2 GPUs, 100 for 4 GPUs, and 200 for 8 GPUs.
+### 3) Train latent diffusion on RVQ-VAE
+
+Use `tools/train_vq_diffusion.py`:
+
+```bash
+python tools/train_vq_diffusion.py \
+  --dataset_name beat \
+  --vqvae_name VQVAE_BEAT \
+  --name vq_diffusion_beat \
+  --max_epoch 100
+```
+
+Important:
+
+- This script expects a valid RVQ-VAE checkpoint under your `checkpoints` directory.
+- The script currently contains a hardcoded path for loading scaler stats (`global_pipeline.pkl`) and may need manual path updates.
+
+## Inference and Visualization
+
+- Use `inference.ipynb` for notebook-based inference.
+- Use `tools/visualization.py` for script-based generation/visualization (primarily configured for `t2m` by default).
+
+Example:
+
+```bash
+python tools/visualization.py \
+  --opt_path <path_to_opt.txt> \
+  --text "a person is jumping" \
+  --motion_length 60 \
+  --result_path sample.gif
+```
 
 ## Evaluation
 
-```shell
-# GPU_ID indicates which gpu you want to use
-python -u tools/evaluation.py checkpoints/kit/kit_motiondiffuse/opt.txt GPU_ID
-# Or you can omit this option and use cpu for evaluation
-python -u tools/evaluation.py checkpoints/kit/kit_motiondiffuse/opt.txt
-```
+- `evaluation.ipynb` and `tools/evaluation.py` provide evaluation workflows.
+- Some evaluation scripts include absolute local paths and should be adapted before running in a new environment.
 
-## Visualization
+## Troubleshooting
 
-You can visualize human motion with the given language description and the expected motion length. We also provide a [Colab Demo](https://colab.research.google.com/drive/1Dp6VsZp2ozKuu9ccMmsDjyij_vXfCYb3?usp=sharing) and a [Hugging Face Demo](https://huggingface.co/spaces/mingyuan/MotionDiffuse) for your convenience.
+- If imports fail for `pymo`, ensure `datasets/pymo` is on `PYTHONPATH` or run from project root.
+- If training cannot find `mean/std`, verify your preprocessing pipeline output and checkpoint metadata paths.
+- If CUDA issues occur, ensure PyTorch/CUDA/MMCV versions are compatible.
 
-```shell
-# Currently we only support visualization of models trained on the HumanML3D dataset. 
-# Motion length can not be larger than 196, which is the maximum length during training
-# You can omit `gpu_id` to run visualization on your CPU
-# Optionally, you can store the xyz coordinates of each joint to `npy_path`. The shape of motion data is (T, 22, 3), where T denotes the motion length, 22 is the number of joints.
+## Acknowledgements
 
-python -u tools/visualization.py \
-    --opt_path checkpoints/t2m/t2m_motiondiffuse/opt.txt \
-    --text "a person is jumping" \
-    --motion_length 60 \
-    --result_path "test_sample.gif" \
-    --npy_path "test_sample.npy" \
-    --gpu_id 0
-```
+This project builds on ideas and components from MotionDiffuse, text-to-motion evaluation pipelines, and RVQ-based motion tokenization work.
 
-Here are some visualization examples. The motion lengths are shown in the title of animations.
+## License
 
-<table>
-<tr>
-    <td><img src="../figures/gallery_t2m/gen_00.gif" width="100%"/></td>
-    <td><img src="../figures/gallery_t2m/gen_01.gif" width="100%"/></td>
-    <td><img src="../figures/gallery_t2m/gen_02.gif" width="100%"/></td>
-    <td><img src="../figures/gallery_t2m/gen_03.gif" width="100%"/></td>
-</tr>
-<tr>
-    <td><img src="../figures/gallery_t2m/gen_04.gif" width="100%"/></td>
-    <td><img src="../figures/gallery_t2m/gen_05.gif" width="100%"/></td>
-    <td><img src="../figures/gallery_t2m/gen_06.gif" width="100%"/></td>
-    <td><img src="../figures/gallery_t2m/gen_07.gif" width="100%"/></td>
-</tr>
-</table>
-
-**Note:** You may install `matplotlib==3.3.1` to support visualization here.
-
-## Acknowledgement
-
-This code is developed on top of [Generating Diverse and Natural 3D Human Motions from Text](https://github.com/EricGuo5513/text-to-motion)
+No explicit license file is provided in this repository. Add a `LICENSE` file if you plan to distribute or open-source this project.
